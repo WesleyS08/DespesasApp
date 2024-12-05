@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, FlatList, RefreshControl } from 'react-native';
 import axios from 'axios';
+import { Picker } from '@react-native-picker/picker';
 import { createClient } from '@supabase/supabase-js';
 import { Svg, G, Circle, Text as SvgText } from "react-native-svg";
 
@@ -27,50 +28,59 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [monthlyTotal, setMonthlyTotal] = useState<number>(0);
+  const [filterCategory, setFilterCategory] = useState<string>('')
+  const [totalsByCategory, setTotalsByCategory] = useState<{ [key: string]: number }>({});
 
 
+// Função para analisar o texto da mensagem
+// Função para analisar o texto da mensagem
+const parseMessageDetails = (message: string): { expense?: string; value?: number; status?: string; category?: string; box?: boolean; operation?: 'mais' | 'menos' } | null => {
+  console.log('Analisando mensagem:', message); // Log para ver a mensagem original
+  
+  if (message.toLowerCase().includes('deletar')) {
+    console.log('Mensagem ignorada (deletar detectado).');
+    return null;  // Ignora a mensagem
+  }
 
-  // Função para analisar o texto da mensagem
-  const parseMessageDetails = (message: string): { expense?: string; value?: number; status?: string; category?: string; box?: boolean; operation?: 'mais' | 'menos'; } | null => {
-    if (message.toLowerCase().includes('deletar')) {
-      return null;  // Ignora a mensagem
-    }
+  // Verificar se é uma "caixinha"
+  const caixaRegex = /Caixinha:\s*([a-zA-Z\s]+)\s*-\s*(mais|menos)\s*(\d+(\.\d+)?)/i;
+  const caixaMatch = message.match(caixaRegex);
 
-    // Verificar se é uma "caixinha"
-    const caixaRegex = /Caixinha:\s*([a-zA-Z\s]+)\s*-\s*(mais|menos)\s*(\d+(\.\d+)?)/i;
-    const caixaMatch = message.match(caixaRegex);
+  if (caixaMatch) {
+    console.log('Mensagem de caixinha encontrada:', caixaMatch); // Log para ver os detalhes da caixinha
+    return {
+      box: true,
+      expense: caixaMatch[1].trim(),
+      value: parseFloat(caixaMatch[3]),
+      operation: caixaMatch[2] as 'mais' | 'menos',  // Assegura que a operação seja "mais" ou "menos"
+    };
+  }
 
-    if (caixaMatch) {
-      return {
-        box: true,
-        expense: caixaMatch[1].trim(),
-        value: parseFloat(caixaMatch[3]),
-        operation: caixaMatch[2] === 'mais' ? 'mais' : 'menos',
-      };
-    }
+  // Caso contrário, analisar como uma despesa
+  const regex = /([a-zA-Z\s]+)\s*-\s*(\d+)\s*-\s*(Pago|Não\sPago)/i;
+  const match = message.match(regex);
 
-    // Caso contrário, analisar como uma despesa
-    const regex = /([a-zA-Z\s]+)\s*-\s*(\d+)\s*-\s*(Pago|Não\sPago)/i;
-    const match = message.match(regex);
+  if (match) {
+    console.log('Mensagem de despesa encontrada:', match); // Log para ver os detalhes da despesa
+    return {
+      expense: match[1].trim(),
+      value: parseFloat(match[2]),
+      status: match[3] === 'Pago' ? 'Pago' : 'Não Pago',
+      category: message.includes('Categoria:') ? message.split('Categoria:')[1].trim() : 'Desconhecido',
+    };
+  }
 
-    if (match) {
-      return {
-        expense: match[1].trim(),
-        value: parseFloat(match[2]),
-        status: match[3] === 'Pago' ? 'Pago' : 'Não Pago',
-        category: message.includes('Categoria:') ? message.split('Categoria:')[1].trim() : 'Desconhecido',
-      };
-    }
+  console.log('Mensagem não corresponde a nenhum padrão (caixinha ou despesa).');
+  return null;
+}
 
-    return null;
-  };
 
   // Função para buscar mensagens do Telegram
   const fetchMessages = async () => {
     try {
       const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates`;
       const response = await axios.get(url);
-
+      console.log(url)
       const updates = response.data.result;
 
       const allMessages = updates
@@ -115,13 +125,36 @@ export default function App() {
   };
 
   const generateColorForExpense = (expense: string) => {
+    // Definindo cores específicas para cada tipo de gasto
+    const expenseColors: { [key: string]: string } = {
+      'Fatura': '#4CAF50',
+      'Brilhete': '#FF5722',
+      'gastos diversos': '#2196F3', // Azul para gastos diversos
+      'Aluguel': '#1E3A8A', // Azul escuro para aluguel
+      'Mercado': '#388E3C', // Verde para mercado
+      'Compras online': '#7B1FA2', // Roxo para compras online
+      'Transporte': '#0288D1', // Azul claro para transporte
+      'Lazer': '#FF5722', // Laranja para lazer
+      'Saúde': '#00796B', // Verde-azulado para saúde
+      'Educacao': '#64B5F6', // Azul claro para educação
+    };
+
+    // Se o tipo de 'expense' for um dos definidos, retorna a cor correspondente
+    if (expenseColors[expense]) {
+      return expenseColors[expense];
+    }
+
+    // Caso contrário, gera uma cor aleatória entre algumas cores mais suaves
     const colors = [
-      '#FF6347', '#4682B4', '#32CD32', '#FFD700', '#FF69B4', '#8A2BE2', '#FF4500'
+      '#FFEB3B', '#8BC34A', '#FF9800', '#03A9F4', '#9C27B0', '#FF5722', '#607D8B'
     ];
+
     const hash = [...expense].reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const colorIndex = hash % colors.length;
+
     return colors[colorIndex];
   };
+
   // Função para salvar mensagens no Supabase
   const saveMessagesToSupabase = async (messages: Message[]) => {
     try {
@@ -219,6 +252,14 @@ export default function App() {
   };
 
 
+
+  const size = 200; // Tamanho total do gráfico (diâmetro)
+  const strokeWidth = 20; // Largura do traço
+  const radius = (size - strokeWidth) / 2; // Raio do círculo
+  const circumference = 2 * Math.PI * radius; // Comprimento do círculo
+  const gap = 2; // Espaço entre os segmentos
+
+  // Função para buscar mensagens do Supabase
   const fetchMessagesFromDatabase = async () => {
     try {
       const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
@@ -248,149 +289,172 @@ export default function App() {
         }));
 
         setMessages(messages);
-        calculateMonthlyTotal(messages); // Calcula o total do mês
+        calculateTotalsByCategory(messages); // Calcula os totais por categoria
       }
     } catch (error) {
       console.error('Erro geral ao buscar mensagens do banco de dados:', error);
     }
   };
 
-  // Função para calcular o total das despesas do mês
-  const calculateMonthlyTotal = (messages: Message[]) => {
-    const total = messages.reduce((sum, message) => {
-      if (message.value && message.status === 'Pago') {
-        return sum + message.value;
-      }
-      return sum;
-    }, 0);
+  // Função para calcular os totais por categoria
+  const calculateTotalsByCategory = (messages: any[]) => {
+    const totals: { [key: string]: number } = {};
 
-    setMonthlyTotal(total);
+    messages.forEach((message) => {
+      if (message.value) {
+        // Somar o total por categoria
+        if (totals[message.category]) {
+          totals[message.category] += message.value;
+        } else {
+          totals[message.category] = message.value;
+        }
+      }
+    });
+
+    setTotalsByCategory(totals);
+  };
+
+  useEffect(() => {
+    fetchMessagesFromDatabase(); // Chama a função para buscar os dados do banco
+  }, []); // O array vazio significa que o efeito só será executado uma vez, após o carregamento inicial.
+
+  const totalValue = Object.values(totalsByCategory).reduce((sum, value) => sum + value, 0);
+
+  const createChart = Object.keys(totalsByCategory).map((category, index) => {
+    const value = totalsByCategory[category];
+    const percentage = (value / totalValue) * 100; // Percentual de cada despesa
+    const offset =
+      Object.keys(totalsByCategory)
+        .slice(0, index)
+        .reduce((sum, cat) => sum + (totalsByCategory[cat] / totalValue) * circumference, 0); // Deslocamento do segmento
+
+    return {
+      expense: category,
+      value: value,
+      color: generateColorForExpense(category),
+      percentage: percentage.toFixed(2),
+      offset: offset + gap * index, // Ajuste para o espaço entre os segmentos
+    };
+  });
+  const filterMessages = () => {
+    return messages.filter((message) =>
+      filterCategory ? message.category === filterCategory : true
+    );
   };
 
 
-  const size = 200; // Tamanho total do gráfico
-  const strokeWidth = 20; // Largura do traço
-  const radius = (size - strokeWidth) / 2; // Raio do círculo
-  const circumference = 2 * Math.PI * radius; // Comprimento do círculo
-  const gap = 2; // Espaço entre os segmentos
-
-  // Dados de exemplo (cada despesa com seu valor e cor)
-  const expenses = [
-    { expense: "Alimentação", value: 300, color: "#5271FF" },
-    { expense: "Transporte", value: 120, color: "#FF5E57" },
-    { expense: "Lazer", value: 180, color: "#45C467" },
-    { expense: "Educação", value: 250, color: "#8C57F9" },
-    { expense: "Outros", value: 150, color: "#FFB74D" },
-  ];
-
-  const totalValue = expenses.reduce((sum, item) => sum + item.value, 0);
-
-  // Prepara os dados para o gráfico
-  const createChart = expenses.map((item, index) => {
-    const percentage = (item.value / totalValue) * 100;
-    const offset =
-      expenses
-        .slice(0, index)
-        .reduce((sum, d) => sum + (d.value / totalValue) * circumference, 0);
-
-    return {
-      ...item,
-      percentage: percentage.toFixed(2),
-      offset: offset + gap * index,
-    };
-  });
-
-  useEffect(() => {
-    fetchMessagesFromDatabase();
-  }, []);
-
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Mensagens do Usuário</Text>
+      <Text style={styles.title}>Últimos Registros</Text>
+
+      {/* Componente de seleção para filtro de categoria */}
+      <Picker
+        selectedValue={filterCategory}
+        style={styles.picker}
+        onValueChange={(itemValue) => setFilterCategory(itemValue)}
+      >
+        <Picker.Item label="Todas as Categorias" value="" />
+        {Object.keys(totalsByCategory).map((category) => (
+          <Picker.Item key={category} label={category} value={category} />
+        ))}
+      </Picker>
+
       <FlatList
-  data={messages}
-  keyExtractor={(item) => item.id.toString()}
-  renderItem={({ item }) => (
-    <View style={[styles.cardContainer, { backgroundColor: item.color }]}>
-      <Text style={styles.cardText}>
-        {item.box ? (
-          `Caixinha: ${item.expense} - ${item.operation === 'mais' ? '➕' : '➖'} ${item.value}`
-        ) : (
-          `${item.expense} - ${item.value} - ${item.status === 'Pago' ? '✅ Pago' : '❌ Não Pago'} - Categoria: ${item.category}`
+        data={filterMessages()}
+        keyExtractor={(item) => item.id.toString()}
+        renderItem={({ item }) => (
+          <View style={[styles.cardContainer, { backgroundColor: item.color }]}>
+            <Text style={styles.cardText}>
+              {item.box ? (
+                `Caixinha: ${item.expense} - ${item.operation === 'mais' ? '➕' : '➖'} ${item.value}`
+              ) : (
+                `${item.expense} - ${item.value} - ${item.status === 'Pago' ? '✅ Pago' : '❌ Não Pago'} - Categoria: ${item.category}`
+              )}
+            </Text>
+          </View>
         )}
-      </Text>
-    </View>
-  )}
-  horizontal={true} // Scroll horizontal
-  showsHorizontalScrollIndicator={false} // Esconde a barra de rolagem
-  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-/>
+        horizontal={true}
+        showsHorizontalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      />
 
+      {/* Seção de Análise de Gastos Mensais */}
+      <View style={styles.analysisContainer}>
+        <Text style={styles.analysisTitle}>Análise de Gastos Mensais</Text>
+        {/* Aqui você pode adicionar gráficos ou comparativos de gastos */}
+        <Text>Total Geral: {totalValue.toFixed(2)}</Text>
+        <Text>Total por Categoria:</Text>
+        {Object.entries(totalsByCategory).map(([category, value]) => (
+          <Text key={category}>
+            {category}: {value.toFixed(2)} ({((value / totalValue) * 100).toFixed(2)}%)
+          </Text>
+        ))}
+      </View>
 
+      {/* Seção de Caixinhas */}
+      <View style={styles.boxContainer}>
+        <Text style={styles.boxTitle}>Caixinhas</Text>
+        {messages.filter(message => message.box).map((item) => (
+          <Text key={item.id}>
+            {item.expense} - {item.value} - {item.operation === 'mais' ? '➕' : '➖'}
+          </Text>
+        ))}
+      </View>
 
-      <Svg width={size} height={size}>
-        <G rotation="-90" origin={`${size / 2}, ${size / 2}`}>
-          {createChart.map((slice, index) => (
+      {/* Gráfico de Pizza */}
+      <View style={styles.chartContainer}>
+        <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          {createChart.map((item, index) => (
             <Circle
               key={index}
               cx={size / 2}
               cy={size / 2}
               r={radius}
-              stroke={slice.color}
+              stroke={item.color}
               strokeWidth={strokeWidth}
-              strokeDasharray={`${(slice.percentage / 100) * circumference - gap}, ${circumference}`}
-              strokeDashoffset={-slice.offset}
+              strokeDasharray={`${(item.value / totalValue) * circumference} ${circumference}`}
+              strokeDashoffset={item.offset}
               fill="transparent"
-              strokeLinecap="round"
             />
           ))}
-        </G>
+          {createChart.map((item, index) => {
+            const angle = ((item.percentage / 100) * 360) / 2;
+            const x = size / 2 + (radius + 10) * Math.cos((angle * Math.PI) / 180);
+            const y = size / 2 + (radius + 10) * Math.sin((angle * Math.PI) / 180);
 
-        {/* Mostra o valor total no centro */}
-        <SvgText
-          x="50%"
-          y="50%"
-          textAnchor="middle"
-          fontSize="16"
-          alignmentBaseline="middle"
-          fill="#333"
-          fontWeight="bold"
+            return (
+              <SvgText
+                key={index}
+                x={x}
+                y={y}
+                fontSize="12"
+                textAnchor="middle"
+                fill={item.color}
+              >
+                {item.percentage}%
+              </SvgText>
+            );
+          })}
+        </Svg>
+
+        {/* Total Geral no centro */}
+        <Text
+          style={{
+            position: 'absolute',
+            fontSize: 24,
+            fontWeight: 'bold',
+            color: '#000',
+            textAlign: 'center',
+            top: size / 2 - 12,
+            left: size / 2 - 30,
+          }}
         >
           {totalValue.toFixed(2)}
-        </SvgText>
+        </Text>
+      </View>
 
-        {/* Mostra as porcentagens no centro dos segmentos */}
-        {createChart.map((slice, index) => {
-          const startAngle = slice.offset / circumference;
-          const endAngle = startAngle + slice.percentage / 100;
-          const middleAngle = (startAngle + endAngle) / 2;
-
-          const x =
-            size / 2 +
-            radius * 0.7 * Math.cos(2 * Math.PI * middleAngle);
-          const y =
-            size / 2 +
-            radius * 0.7 * Math.sin(2 * Math.PI * middleAngle);
-
-          return (
-            <SvgText
-              key={`label-${index}`}
-              x={x}
-              y={y}
-              textAnchor="middle"
-              fontSize="10"
-              alignmentBaseline="middle"
-              fill="#333"
-            >
-              {`${slice.percentage}%`}
-            </SvgText>
-          );
-        })}
-      </Svg>
       <StatusBar style="auto" />
     </View>
-
-
   );
 }
 
@@ -405,33 +469,52 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
   },
-  messageContainer: {
-    marginBottom: 10,
+  analysisContainer: {
+    marginVertical: 20,
     padding: 10,
-    backgroundColor: '#f8f8f8',
-    borderRadius: 5,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
+    width: '90%',
   },
-  messageText: {
-    fontSize: 16,
+  analysisTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  boxContainer: {
+    marginVertical: 20,
+    padding: 10,
+    backgroundColor: '#e0f7fa',
+    borderRadius: 10,
+    width: '90%',
+  },
+  boxTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  chartContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 20,
   },
   cardContainer: {
-    width: 250, // Largura do cartão
-    height: 150, // Altura do cartão
-    margin: 10, // Espaçamento entre os cartões
-    borderRadius: 12, // Bordas arredondadas
-    padding: 15, // Espaçamento interno do cartão
-    justifyContent: 'center', // Alinhamento central
-    alignItems: 'center', // Alinhamento central
-    elevation: 5, // Sombra no Android
-    shadowColor: '#000', // Sombra no iOS
-    shadowOffset: { width: 0, height: 2 }, // Sombra no iOS
-    shadowOpacity: 0.2, // Intensidade da sombra no iOS
-    shadowRadius: 3.5, // Raio da sombra no iOS
+    width: 250,
+    height: 150,
+    margin: 10,
+    borderRadius: 12,
+    padding: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3.5,
   },
   cardText: {
     fontSize: 16,
     color: '#FFFFFF',
-    textAlign: 'center', // Centraliza o texto
+    textAlign: 'center',
   },
-
 });
