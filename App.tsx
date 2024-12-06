@@ -32,70 +32,77 @@ export default function App() {
   const [totalsByCategory, setTotalsByCategory] = useState<{ [key: string]: number }>({});
 
 
-// Função para analisar o texto da mensagem
-// Função para analisar o texto da mensagem
-const parseMessageDetails = (message: string): { expense?: string; value?: number; status?: string; category?: string; box?: boolean; operation?: 'mais' | 'menos' } | null => {
-  console.log('Analisando mensagem:', message); // Log para ver a mensagem original
+  const parseMessageDetails = (message: string): { 
+    expense?: string; 
+    value?: number; 
+    status?: string; 
+    category?: string; 
+    box?: boolean; 
+    operation?: 'mais' | 'menos' 
+  } | null => {
+    console.log('Analisando mensagem:', message); // Log para ver a mensagem original
   
-  if (message.toLowerCase().includes('deletar')) {
-    console.log('Mensagem ignorada (deletar detectado).');
-    return null;  // Ignora a mensagem
-  }
+    if (message.toLowerCase().includes('deletar')) {
+      console.log('Mensagem ignorada (deletar detectado).');
+      return null;  // Ignora a mensagem
+    }
+  
+    // Verificar se é uma "caixinha" com o hífen
+    const caixaRegex = /Caixinha:\s*([a-zA-Záàãâéèêíóòôúç\s]+)\s*-\s*(mais|menos)\s*(\d+(\.\d+)?)/i;
+    const caixaMatch = message.match(caixaRegex);
+  
+    if (caixaMatch) {
+      console.log('Mensagem de caixinha encontrada:', caixaMatch); // Log para ver os detalhes da caixinha
+      return {
+        box: true,  // Marcando como caixinha
+        expense: caixaMatch[1].trim(),  // Nome da caixinha
+        value: parseFloat(caixaMatch[3]),  // Valor da caixinha
+        operation: caixaMatch[2] as 'mais' | 'menos',  // Operação de "mais" ou "menos"
+        category: caixaMatch[1].trim(),  // Preencher a categoria com o nome da caixinha
+      };
+    }
+  
+    // Caso contrário, analisar como uma despesa
+    const regex = /([a-zA-Z\s]+)\s*-\s*(\d+)\s*-\s*(Pago|Não\sPago)/i;
+    const match = message.match(regex);
+  
+    if (match) {
+      console.log('Mensagem de despesa encontrada:', match); // Log para ver os detalhes da despesa
+      return {
+        expense: match[1].trim(),
+        value: parseFloat(match[2]),
+        status: match[3] === 'Pago' ? 'Pago' : 'Não Pago',
+        category: message.includes('Categoria:') ? message.split('Categoria:')[1].trim() : 'Desconhecido',
+      };
+    }
+  
+    console.log('Mensagem não corresponde a nenhum padrão (caixinha ou despesa).');
+    return null;
+  };
+  
 
-  // Verificar se é uma "caixinha"
-  const caixaRegex = /Caixinha:\s*([a-zA-Z\s]+)\s*-\s*(mais|menos)\s*(\d+(\.\d+)?)/i;
-  const caixaMatch = message.match(caixaRegex);
-
-  if (caixaMatch) {
-    console.log('Mensagem de caixinha encontrada:', caixaMatch); // Log para ver os detalhes da caixinha
-    return {
-      box: true,
-      expense: caixaMatch[1].trim(),
-      value: parseFloat(caixaMatch[3]),
-      operation: caixaMatch[2] as 'mais' | 'menos',  // Assegura que a operação seja "mais" ou "menos"
-    };
-  }
-
-  // Caso contrário, analisar como uma despesa
-  const regex = /([a-zA-Z\s]+)\s*-\s*(\d+)\s*-\s*(Pago|Não\sPago)/i;
-  const match = message.match(regex);
-
-  if (match) {
-    console.log('Mensagem de despesa encontrada:', match); // Log para ver os detalhes da despesa
-    return {
-      expense: match[1].trim(),
-      value: parseFloat(match[2]),
-      status: match[3] === 'Pago' ? 'Pago' : 'Não Pago',
-      category: message.includes('Categoria:') ? message.split('Categoria:')[1].trim() : 'Desconhecido',
-    };
-  }
-
-  console.log('Mensagem não corresponde a nenhum padrão (caixinha ou despesa).');
-  return null;
-}
-
-
-  // Função para buscar mensagens do Telegram
   const fetchMessages = async () => {
     try {
       const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates`;
       const response = await axios.get(url);
-      console.log(url)
+      console.log('URL de requisição:', url);
       const updates = response.data.result;
-
+  
+      console.log('Atualizações recebidas do Telegram:', updates);
+  
       const allMessages = updates
         .map((update: any) => {
           const message = update.message || update.edited_message;
           if (message?.chat?.id === parseInt(CHAT_ID)) {
             const messageDetails = parseMessageDetails(message.text || '');
-
+  
             if (!messageDetails) {
               markMessageAsDeleted(message.message_id);
               return null;
             }
-
+  
             const expenseColor = generateColorForExpense(messageDetails.expense);
-
+  
             return {
               id: message.message_id,
               text: message.text || 'Mensagem sem texto',
@@ -104,25 +111,106 @@ const parseMessageDetails = (message: string): { expense?: string; value?: numbe
               status: messageDetails.status,
               category: messageDetails.category,
               color: expenseColor,  // Cor para o `expense`
+              box: messageDetails.box,  // Indicador de caixinha
+              operation: messageDetails.operation  // Operação de caixinha
             };
           }
           return null;
         })
         .filter(Boolean);
-
+  
       const latestMessages = allMessages
         .sort((a, b) => b.id - a.id)
         .slice(0, 5);
-
+  
+      console.log('Últimas mensagens:', latestMessages);
+  
       setMessages(latestMessages);
-
-      await saveMessagesToSupabase(latestMessages);
-      await syncMessagesWithSupabase(latestMessages);
-
+  
+      // Filtrar mensagens de caixinha e despesa
+      const caixinhas = latestMessages.filter((msg) => msg.box);
+      const despesas = latestMessages.filter((msg) => !msg.box);
+  
+      // Chamar as funções de salvamento com as mensagens filtradas
+      if (caixinhas.length > 0) {
+        await saveCaixinhasToSupabase(caixinhas);
+      }
+  
+      if (despesas.length > 0) {
+        await saveExpensesToSupabase(despesas);
+      }
+  
     } catch (error) {
       console.error('Erro ao buscar mensagens:', error);
     }
   };
+  
+  
+
+  const saveCaixinhasToSupabase = async (messages: Message[]) => {
+    try {
+      const { data, error } = await supabase
+        .from('caixinhas')
+        .upsert(
+          messages
+            .filter(message => message.box)  // Filtra as mensagens que são caixinhas
+            .map((message) => ({
+              message_id: message.id,
+              expense: message.expense,
+              value: message.value,
+              operation: message.operation,  // Operação (mais/menos)
+              category: message.category,
+              box: true,  // Sempre true para caixinha
+              is_deleted: false,
+              // Não inclui 'status' para caixinhas
+            })),
+          { onConflict: ['message_id'] }
+        );
+  
+      if (error) {
+        console.error('Erro ao salvar mensagens na tabela "caixinhas":', error);
+      } else {
+        console.log('Mensagens salvas ou atualizadas na tabela "caixinhas":', data);
+      }
+    } catch (error) {
+      console.error('Erro ao salvar caixinhas no Supabase:', error);
+    }
+  };
+  
+
+
+
+  const saveExpensesToSupabase = async (messages: Message[]) => {
+    try {
+      const { data, error } = await supabase
+        .from('expenses')
+        .upsert(
+          messages
+            .filter(message => !message.box)  // Filtra as mensagens que não são caixinhas
+            .map((message) => ({
+              message_id: message.id,
+              expense: message.expense,
+              value: message.value,
+              status: message.status || 'Não Aplicável',  // Valor padrão para status
+              category: message.category || 'Desconhecido',  // Categoria padrão
+              is_deleted: false,
+              box: message.box !== undefined ? message.box : false,
+            })),
+          { onConflict: ['message_id'] }
+        );
+  
+      if (error) {
+        console.error('Erro ao salvar mensagens na tabela "expenses":', error);
+      } else {
+        console.log('Mensagens salvas ou atualizadas na tabela "expenses":', data);
+      }
+    } catch (error) {
+      console.error('Erro ao salvar despesas no Supabase:', error);
+    }
+  };
+    
+  
+
 
   const generateColorForExpense = (expense: string) => {
     // Definindo cores específicas para cada tipo de gasto
@@ -137,6 +225,7 @@ const parseMessageDetails = (message: string): { expense?: string; value?: numbe
       'Lazer': '#FF5722', // Laranja para lazer
       'Saúde': '#00796B', // Verde-azulado para saúde
       'Educacao': '#64B5F6', // Azul claro para educação
+      'Caixinha': '#FF9800',
     };
 
     // Se o tipo de 'expense' for um dos definidos, retorna a cor correspondente
@@ -155,32 +244,6 @@ const parseMessageDetails = (message: string): { expense?: string; value?: numbe
     return colors[colorIndex];
   };
 
-  // Função para salvar mensagens no Supabase
-  const saveMessagesToSupabase = async (messages: Message[]) => {
-    try {
-      const { data, error } = await supabase
-        .from('expenses')
-        .upsert(
-          messages.map((message) => ({
-            message_id: message.id,  // Usando o message_id como chave única
-            expense: message.expense,
-            value: message.value,
-            status: message.status,
-            category: message.category || 'Desconhecido', // Definindo categoria ou valor padrão
-            is_deleted: false,  // Marcar como não deletada
-          })),
-          { onConflict: ['message_id'] }
-        );
-
-      if (error) {
-        console.error('Erro ao salvar mensagens no Supabase:', error);
-      } else {
-        console.log('Mensagens salvas ou atualizadas no Supabase:', data);
-      }
-    } catch (error) {
-      console.error('Erro ao salvar mensagens no Supabase:', error);
-    }
-  };
 
   // Função para marcar mensagem como deletada
   const markMessageAsDeleted = async (messageId: number) => {
@@ -301,8 +364,8 @@ const parseMessageDetails = (message: string): { expense?: string; value?: numbe
     const totals: { [key: string]: number } = {};
 
     messages.forEach((message) => {
-      if (message.value) {
-        // Somar o total por categoria
+      if (message.value && !message.box) { // Filtra as mensagens de caixinha
+        // Somar o total por categoria, excluindo caixinhas
         if (totals[message.category]) {
           totals[message.category] += message.value;
         } else {
@@ -313,6 +376,7 @@ const parseMessageDetails = (message: string): { expense?: string; value?: numbe
 
     setTotalsByCategory(totals);
   };
+
 
   useEffect(() => {
     fetchMessagesFromDatabase(); // Chama a função para buscar os dados do banco
@@ -368,7 +432,7 @@ const parseMessageDetails = (message: string): { expense?: string; value?: numbe
               {item.box ? (
                 `Caixinha: ${item.expense} - ${item.operation === 'mais' ? '➕' : '➖'} ${item.value}`
               ) : (
-                `${item.expense} - ${item.value} - ${item.status === 'Pago' ? '✅ Pago' : '❌ Não Pago'} - Categoria: ${item.category}`
+                `${item.expense} - ${item.value} - ${item.status === 'Pago' ? '✅ Pago' : '❌ Não Pago'} - Categoria: ${item.category || 'Desconhecido'}`
               )}
             </Text>
           </View>
@@ -377,6 +441,7 @@ const parseMessageDetails = (message: string): { expense?: string; value?: numbe
         showsHorizontalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       />
+
 
       {/* Seção de Análise de Gastos Mensais */}
       <View style={styles.analysisContainer}>
