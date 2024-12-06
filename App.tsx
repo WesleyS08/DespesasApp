@@ -4,14 +4,11 @@ import { StyleSheet, Text, View, FlatList, RefreshControl, TouchableOpacity, Scr
 import axios from 'axios';
 import { Picker } from '@react-native-picker/picker';
 import { createClient } from '@supabase/supabase-js';
-import { Svg, G, Circle, Text as SvgText } from "react-native-svg";
+import Icon from 'react-native-vector-icons/MaterialIcons';
 import {
-  LineChart,
-  BarChart,
-  PieChart,
+
   ProgressChart,
-  ContributionGraph,
-  StackedBarChart
+
 } from "react-native-chart-kit";
 import { Dimensions } from "react-native";
 
@@ -40,11 +37,11 @@ export default function App() {
   const [filterCategory, setFilterCategory] = useState<string>('')
   const [totalsByCategory, setTotalsByCategory] = useState<{ [key: string]: number }>({});
   const [filterExpense, setFilterExpense] = useState('');
-
+  const [numToRender, setNumToRender] = useState(10)
   const [comparisonData, setComparisonData] = useState({});
   const [maxIncrease, setMaxIncrease] = useState(null);
   const [maxDecrease, setMaxDecrease] = useState(null);
-  
+  const [comparisonResults, setComparisonResults] = useState([]);
   const parseMessageDetails = (message: string): {
     expense?: string;
     value?: number;
@@ -93,10 +90,9 @@ export default function App() {
     return null;
   };
 
-
+  // Alteração ao chamar `setMessages` para garantir que o valor seja um array
   const fetchMessages = async () => {
     try {
-      // Definindo o começo e o final do dia atual
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0); // Começo do dia (meia-noite)
       const endOfDay = new Date();
@@ -107,12 +103,11 @@ export default function App() {
       const updates = response.data.result;
 
       const allMessages = updates
-        .map((update: any) => {
+        .map((update) => {
           const message = update.message || update.edited_message;
           const messageDate = new Date(message?.date * 1000); // A data vem em timestamp, convertendo para Date
 
-          // Filtra mensagens enviadas no dia atual
-          if (message?.chat?.id === parseInt(CHAT_ID) && messageDate >= startOfDay && messageDate <= endOfDay) {
+          if (message?.chat?.id === parseInt(CHAT_ID)) {
             const messageDetails = parseMessageDetails(message.text || '');
 
             if (!messageDetails) {
@@ -137,10 +132,22 @@ export default function App() {
           }
           return null;
         })
-        .filter(Boolean);
+        .filter(Boolean); // Remove itens nulos ou inválidos
 
-      console.log('Mensagens enviadas hoje:', allMessages);
-      setMessages(allMessages);
+      // Agrupar mensagens por dia
+      const groupedMessages = groupMessagesByDay(allMessages);
+
+      // Calcular os totais diários
+      const dailyTotals = calculateDailyTotals(groupedMessages);
+
+      // Calcular as diferenças entre os dias
+      const comparisonResults = calculateDifferences(dailyTotals);
+
+      console.log('Comparação entre os dias:', comparisonResults);
+
+      // Exibir os resultados
+      setMessages(Object.values(groupedMessages)); // Atualiza a lista de mensagens agrupadas por dia
+      setComparisonResults(comparisonResults); // Atualiza os resultados da comparação
 
       // Seguir com o processo de salvar caixinhas ou despesas...
       const caixinhas = allMessages.filter((msg) => msg.box);
@@ -153,11 +160,79 @@ export default function App() {
       if (despesas.length > 0) {
         await saveExpensesToSupabase(despesas);
       }
-
     } catch (error) {
       console.error('Erro ao buscar mensagens:', error);
     }
   };
+
+
+
+
+  const groupMessagesByDay = (messages: any[]) => {
+    const groupedMessages: { [date: string]: any[] } = {};
+
+    messages.forEach((message) => {
+      const messageDate = new Date(message.created_at);
+
+      // Verifica se a data é válida
+      if (isNaN(messageDate.getTime())) {
+        console.warn(`Data inválida para a mensagem ${message.id}`);
+        return; // Ignora mensagens com data inválida
+      }
+
+      const dateKey = messageDate.toISOString().split('T')[0];  // Ex: '2024-12-06'
+
+      if (!groupedMessages[dateKey]) {
+        groupedMessages[dateKey] = [];
+      }
+
+      groupedMessages[dateKey].push(message);
+    });
+
+    return groupedMessages;
+  };
+
+  const calculateDifferences = (dailyTotals) => {
+    const comparisonResults = [];
+    const dates = Object.keys(dailyTotals);
+
+    for (let i = 1; i < dates.length; i++) {
+      const currentDate = dates[i];
+      const previousDate = dates[i - 1];
+
+      const currentTotal = dailyTotals[currentDate];
+      const previousTotal = dailyTotals[previousDate];
+
+      const difference = currentTotal - previousTotal;
+      const percentageChange = previousTotal !== 0 ? (difference / previousTotal) * 100 : 0;
+
+      comparisonResults.push({
+        currentDate,
+        previousDate,
+        currentTotal,
+        previousTotal,
+        difference,
+        percentageChange,
+      });
+    }
+
+    return comparisonResults;
+  };
+
+  const calculateDailyTotals = (groupedMessages) => {
+    const dailyTotals = {};
+
+    Object.entries(groupedMessages).forEach(([date, messages]) => {
+      const totalValue = messages.reduce((sum, message) => sum + message.value, 0);
+      dailyTotals[date] = totalValue;
+    });
+
+    return dailyTotals;
+  };
+
+
+
+
 
 
 
@@ -174,9 +249,8 @@ export default function App() {
               value: message.value,
               operation: message.operation,  // Operação (mais/menos)
               category: message.category,
-              box: true,  // Sempre true para caixinha
+              box: true,
               is_deleted: false,
-              // Não inclui 'status' para caixinhas
             })),
           { onConflict: ['message_id'] }
         );
@@ -200,13 +274,13 @@ export default function App() {
         .from('expenses')
         .upsert(
           messages
-            .filter(message => !message.box)  // Filtra as mensagens que não são caixinhas
+            .filter(message => !message.box)
             .map((message) => ({
               message_id: message.id,
               expense: message.expense,
               value: message.value,
-              status: message.status || 'Não Aplicável',  // Valor padrão para status
-              category: message.category || 'Desconhecido',  // Categoria padrão
+              status: message.status || 'Não Aplicável',
+              category: message.category || 'Desconhecido',
               is_deleted: false,
               box: message.box !== undefined ? message.box : false,
             })),
@@ -224,35 +298,48 @@ export default function App() {
   };
 
   const generateColorForExpense = (expense: string) => {
-    // Definindo cores específicas para cada tipo de gasto
     const expenseColors: { [key: string]: string } = {
       'Fatura': '#4CAF50',
       'Brilhete': '#FF5722',
-      'gastos diversos': '#2196F3', // Azul para gastos diversos
-      'Aluguel': '#1E3A8A', // Azul escuro para aluguel
-      'Mercado': '#388E3C', // Verde para mercado
-      'Compras online': '#7B1FA2', // Roxo para compras online
-      'Transporte': '#0288D1', // Azul claro para transporte
-      'Lazer': '#FF5722', // Laranja para lazer
-      'Saúde': '#00796B', // Verde-azulado para saúde
-      'Educacao': '#64B5F6', // Azul claro para educação
+      'gastos diversos': '#2196F3',
+      'Aluguel': '#1E3A8A',
+      'Mercado': '#388E3C',
+      'Compras online': '#7B1FA2',
+      'Transporte': '#0288D1',
+      'Lazer': '#FF5722',
+      'Saúde': '#00796B',
+      'Educacao': '#64B5F6',
       'Caixinha': '#FF9800',
     };
 
-    // Se o tipo de 'expense' for um dos definidos, retorna a cor correspondente
     if (expenseColors[expense]) {
       return expenseColors[expense];
     }
 
-    // Caso contrário, gera uma cor aleatória entre algumas cores mais suaves
-    const colors = [
-      '#FFEB3B', '#8BC34A', '#FF9800', '#03A9F4', '#9C27B0', '#FF5722', '#607D8B'
-    ];
-
+    const colors = ['#FFEB3B', '#8BC34A', '#FF9800', '#03A9F4', '#9C27B0', '#FF5722', '#607D8B'];
     const hash = [...expense].reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const colorIndex = hash % colors.length;
 
     return colors[colorIndex];
+  };
+
+  // Ícones para as categorias
+  const getCategoryIcon = (expense: string) => {
+    const icons: { [key: string]: string } = {
+      'Fatura': 'credit-card',  // Cartão de crédito
+      'Brilhete': 'confirmation-number', // Bilhete
+      'gastos diversos': 'attach-money', // Dinheiro
+      'Aluguel': 'home', // Casa
+      'Mercado': 'shopping-cart', // Carrinho de supermercado
+      'Compras online': 'shopping-bag', // Sacola de compras
+      'Transporte': 'directions-car', // Carro
+      'Lazer': 'party-mode', // Festa
+      'Saúde': 'local-hospital', // Hospital
+      'Educacao': 'school', // Escola
+      'Caixinha': 'money-off', // Dinheiro saindo (Caixinha)
+    };
+
+    return icons[expense] || 'category'; // Ícone padrão
   };
 
 
@@ -404,38 +491,6 @@ export default function App() {
     }
   };
 
-  
-  useEffect(() => {
-    const fetchMonthlyComparison = async () => {
-      try {
-        const lastMonthData = await fetchLastMonthData(); // Busca os dados do mês passado
-        const comparison = compareWithLastMonth(totalsByCategory, lastMonthData); // Faz a comparação
-        setComparisonData(comparison);
-
-        // Identificar maior aumento e redução
-        let maxIncrease = { category: null, difference: -Infinity };
-        let maxDecrease = { category: null, difference: Infinity };
-
-        for (const [category, data] of Object.entries(comparison)) {
-          if (data.difference > maxIncrease.difference) {
-            maxIncrease = { category, ...data };
-          }
-          if (data.difference < maxDecrease.difference) {
-            maxDecrease = { category, ...data };
-          }
-        }
-
-        setMaxIncrease(maxIncrease);
-        setMaxDecrease(maxDecrease);
-      } catch (error) {
-        console.error('Erro ao carregar análise de gastos:', error);
-      }
-    };
-
-    fetchMonthlyComparison();
-  }, [totalsByCategory]);
-
-
 
   // Função para calcular os totais por expense
   const calculateTotalsByExpense = (messages: any[]) => {
@@ -505,25 +560,6 @@ export default function App() {
       console.error('Erro ao buscar mensagens:', error);
       return [];
     }
-  };
-
-  const chartConfig2 = {
-    backgroundColor: '#ffffff',
-    backgroundGradientFrom: '#ffffff',
-    backgroundGradientTo: '#ffffff',
-    withShadow: false, // Desativa a sombra
-    decimalPlaces: 2,
-    withDots: true, // Exibe os pontos
-    fromZero: true, // Começa o gráfico do zero
-    color: (opacity = 1) => `rgba(255, 99, 132, ${opacity})`,
-    labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
-    style: {
-      borderRadius: 16, // Bordas arredondadas
-    },
-    propsForDots: {
-      r: '3', // Tamanho dos pontos
-      strokeWidth: '2', // Largura da borda dos pontos
-    },
   };
 
 
@@ -658,21 +694,20 @@ export default function App() {
 
   const chartData = generateChartData();
   const chartConfig = {
-    backgroundColor: "#ffffff", // Cor de fundo principal
-    backgroundGradientFrom: "#ffffff", // Gradiente do fundo inicial
-    backgroundGradientTo: "#ffffff", // Gradiente do fundo final
-    decimalPlaces: 2, // Opcional, padrão 2 casas decimais
-    color: (opacity = 1) => `rgba(128, 0, 128, ${opacity})`, // Cor roxa para a linha
-    labelColor: (opacity = 1) => `rgba(128, 0, 128, ${opacity})`,
+    backgroundGradientFrom: "#262626",
+    backgroundGradientTo: "#262626",
+    decimalPlaces: 2,
+    color: (opacity = 1) => `rgba(0, 255, 255, ${opacity})`, 
+    labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
     style: {
       borderRadius: 16, // Bordas arredondadas
     },
     propsForDots: {
       r: "6", // Tamanho dos pontos
       strokeWidth: "2", // Largura da borda dos pontos
-      stroke: "#FFA726FF", // Cor da borda dos pontos
     },
   };
+
   useEffect(() => {
     console.log('Filtro atual:', filterExpense);
     console.log('Mensagens filtradas:', filterMessages());
@@ -752,8 +787,6 @@ export default function App() {
           const boxRendimento = await calculateCDIRender(boxName, boxValue);
           addDailyRendimentoToBox(boxName, parseFloat(boxRendimento));
         }
-
-        // Reagendar para o próximo dia
         scheduleDailyUpdate();
       }, millisTillEndOfDay);
     };
@@ -761,119 +794,216 @@ export default function App() {
     scheduleDailyUpdate();
   }, [boxData]);
 
+
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const formatDate = (date: string) => {
+    const dateObj = new Date(date);
+    return dateObj.toLocaleDateString('pt-BR');
+  };
+
   return (
-    <ScrollView style={styles.container}> {/* Adiciona rolagem vertical */}
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.scrollContent} // Garante que o conteúdo ocupe mais espaço
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+      }
+    >
+      {/* Título da página */}
       <Text style={styles.title}>Últimos Registros</Text>
 
-      <View style={styles.buttonContainer}>
-        {/* Botão para todos os gastos */}
-        <TouchableOpacity
-          style={[
-            styles.filterButton,
-            !filterExpense && styles.activeButton, // Destaca o botão ativo
-          ]}
-          onPress={() => setFilterExpense('')}
-        >
-          <Text style={styles.buttonText}>Todos os Gastos</Text>
-        </TouchableOpacity>
-
-        {/* Botões dinâmicos para cada gasto */}
-        {Object.keys(totalsByExpense).map((expense) => (
-          <TouchableOpacity
-            key={expense}
-            style={[
-              styles.filterButton,
-              filterExpense === expense && styles.activeButton, // Destaca o botão ativo
-            ]}
-            onPress={() => setFilterExpense(expense)}
-          >
-            <Text style={styles.buttonText}>{expense}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
+      {/* Filtros de gastos */}
       <FlatList
-        data={filterMessages()}
-        keyExtractor={(item) => item.id.toString()}
-        renderItem={({ item }) => (
-          <View style={[styles.cardContainer, { backgroundColor: item.color }]}>
-            <Text style={styles.cardText}>
-              {item.box ? (
-                `Caixinha: ${item.expense} - ${item.operation === 'mais' ? '➕' : '➖'} ${item.value}`
-              ) : (
-                `${item.expense} - ${item.value} - ${item.status === 'Pago' ? '✅ Pago' : '❌ Não Pago'} - Categoria: ${item.category || 'Desconhecido'}`
+        data={Object.keys(messages)} // Use as chaves (datas) como dados para o FlatList
+        keyExtractor={(item) => item}
+        renderItem={({ item, index }) => {
+          const dayMessages = messages[item] || []; // As mensagens do dia (garante que seja um array vazio se não existir)
+          const isExpanded = expandedIndex === index; // Verifica se o item está expandido
+
+          // Verifica se dayMessages é um array antes de usar reduce
+          const totalDayValue = Array.isArray(dayMessages)
+            ? dayMessages.reduce((sum, msg) => sum + msg.value, 0)
+            : 0; // Calcula o total do dia
+
+          // Função para alternar entre expandido e colapsado
+          const toggleExpand = () => {
+            setExpandedIndex(isExpanded ? null : index); // Alterna o estado de expandir
+          };
+
+          return (
+            <View style={[styles.dayContainer, { flexShrink: 1 }]}>
+              {/* Data */}
+              <TouchableOpacity onPress={toggleExpand}>
+                <Text style={styles.dateText1}>{item}</Text> {/* Exibe a data formatada */}
+              </TouchableOpacity>
+
+              {/* Se o dia estiver expandido, mostra o FlatList de mensagens */}
+              {isExpanded && (
+                <FlatList
+                  data={dayMessages}
+                  keyExtractor={(msg) => msg.id.toString()}
+                  renderItem={({ item }) => {
+                    const percentage = totalDayValue > 0 ? (item.value / totalDayValue) * 100 : 0; // Calcula a porcentagem do valor no dia
+
+                    return (
+                      <View style={[styles.cardContainer]}>
+                        <View style={styles.iconContainer}>
+                          <View style={[styles.iconCircle, { backgroundColor: generateColorForExpense(item.expense) || '#ccc' }]}>
+                            <View>
+                              <Icon
+                                name={getCategoryIcon(item.expense)}
+                                size={24}
+                                color="#fff"
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={styles.cardContent}>
+                          <Text style={styles.cardText}>
+                            {item.box ? (
+                              `Caixinha: ${item.expense}  ${item.operation === 'mais' ? '➕' : '➖'}`
+                            ) : (
+                              `${item.expense}`
+                            )}
+                          </Text>
+                          <View style={styles.valueContainer}>
+                            <Text style={styles.valueText}>R$ {item.value.toFixed(2)}</Text>
+                            <Text style={styles.percentageText}>{percentage.toFixed(1)}%</Text>
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  }}
+                  showsVerticalScrollIndicator={true}
+                  style={styles.flatListContainer}
+                />
               )}
-            </Text>
-          </View>
-        )}
-        horizontal={true}
-        showsHorizontalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+            </View>
+          );
+        }}
+        showsVerticalScrollIndicator={false}
       />
 
       {/* Seção de Caixinhas */}
       <View style={styles.boxContainer}>
         <Text style={styles.boxTitle}>Caixinhas</Text>
-        {caixinhas.map(({ boxName, boxValue, boxRendimento }) => (
-          <View key={boxName} style={styles.boxCardContainer}>
-            <Text style={styles.boxCardText}>
-              {boxName}: R$ {new Intl.NumberFormat('pt-BR').format(boxValue.toFixed(2))}
-            </Text>
-            <Text style={styles.boxCardText}>
-              +: R$ {new Intl.NumberFormat('pt-BR').format(parseFloat(boxRendimento).toFixed(2))}
-            </Text>
+
+        {caixinhas.map(({ boxName, boxValue, boxRendimento, boxColor }) => (
+          <View key={boxName} style={[styles.boxCardContainer, { backgroundColor: boxColor || '#F0F0F0' }]}>
+
+            {/* Título da Caixinha com ícone */}
+            <View style={styles.boxHeader}>
+              <Text style={styles.boxCardTitle}>{boxName}</Text>
+              <Icon name="wallet" size={24} color="#CC4709FF" style={styles.boxIcon} />
+            </View>
+
+            {/* Valores */}
+            <View style={styles.boxValueContainer}>
+              <Text style={styles.boxCardText}>
+                <Text style={styles.valueLabel}>Valor Inicial: </Text>
+                <Text style={{ color: parseFloat(boxValue) < 0 ? 'red' : 'black' }}>
+                  R$ {new Intl.NumberFormat('pt-BR').format(Math.abs(boxValue).toFixed(2))}
+                </Text>
+              </Text>
+
+              <Text style={styles.boxCardText}>
+                <Text style={styles.valueLabel}>Rendimento: </Text>
+                <Text style={{ color: parseFloat(boxRendimento) < 0 ? 'red' : 'green' }}>
+                  {parseFloat(boxRendimento) < 0 ? '- R$ ' : '+ R$ '}
+                  {new Intl.NumberFormat('pt-BR').format(Math.abs(parseFloat(boxRendimento)).toFixed(2))}
+                </Text>
+              </Text>
+            </View>
+
+            {/* Rendimento Total (opcional) */}
+            <View style={styles.boxFooter}>
+              <Text style={{
+                color: (parseFloat(boxValue) + parseFloat(boxRendimento)) < 0 ? 'red' : 'black',
+                ...styles.totalText
+              }}>
+                Total: R$ {new Intl.NumberFormat('pt-BR').format((boxValue + parseFloat(boxRendimento)).toFixed(2))}
+              </Text>
+            </View>
           </View>
         ))}
       </View>
-      {/* Seção de Análise de Gastos Mensais */}
+
+
       <View style={styles.analysisContainer}>
-        <Text style={styles.analysisTitle}>Análise de Gastos Mensais</Text>
-        <Text style={styles.analysisText}>Total Geral: R$ {new Intl.NumberFormat('pt-BR').format(totalValue.toFixed(2))}</Text>
+        {/* Título da Seção */}
+        <Text style={styles.analysisTitle}>Comparação Diária</Text>
 
-        {comparisonData &&
-          Object.entries(comparisonData).map(([category, data]) => (
-            <Text key={category} style={styles.analysisText}>
-              {category}: R$ {new Intl.NumberFormat('pt-BR').format(data.currentValue.toFixed(2))} (Diferença: R$ {new Intl.NumberFormat('pt-BR').format(data.difference.toFixed(2))}, {data.percentageChange.toFixed(2)}%)
-            </Text>
-          ))}
+      
 
-        {maxIncrease && (
-          <Text style={styles.analysisText}>
-            Maior aumento: {maxIncrease.category} (R$ {new Intl.NumberFormat('pt-BR').format(maxIncrease.difference.toFixed(2))}, {maxIncrease.percentageChange.toFixed(2)}%)
-          </Text>
-        )}
-        {maxDecrease && (
-          <Text style={styles.analysisText}>
-            Maior redução: {maxDecrease.category} (R$ {new Intl.NumberFormat('pt-BR').format(maxDecrease.difference.toFixed(2))}, {maxDecrease.percentageChange.toFixed(2)}%)
-          </Text>
-        )}
+        {/* Comparações Diárias */}
+        {comparisonResults &&
+          comparisonResults.map((result, index) => {
+            // Definir a cor com base na diferença
+            const differenceColor = result.difference >= 0 ? 'green' : 'red';
+
+            return (
+              <View key={index} style={styles.comparisonContainer}>
+                {/* Datas da Comparação */}
+                <Text style={styles.comparisonText}>
+                  <Text style={styles.dateText}>
+                    {result.previousDate} → {result.currentDate}:
+                  </Text>
+                </Text>
+
+                {/* Valor Gasto no Dia Anterior */}
+                <Text style={styles.previousDayText}>
+                  Gasto no Dia Anterior: R$ {new Intl.NumberFormat('pt-BR').format(result.previousTotal.toFixed(2))}
+                </Text>
+
+                {/* Valor Gasto no Dia Atual */}
+                <Text style={styles.currentDayText}>
+                  Gasto no Dia Atual: R$ {new Intl.NumberFormat('pt-BR').format(result.currentTotal.toFixed(2))}
+                </Text>
+
+                {/* Diferença em Cor */}
+                <Text style={{ color: differenceColor }}>
+                  Diferença: R$ {new Intl.NumberFormat('pt-BR').format(result.difference.toFixed(2))}, {result.percentageChange.toFixed(2)}%
+                </Text>
+              </View>
+            );
+          })}
       </View>
+
+
 
       {/* Total gasto este mês */}
       <Text style={styles.monthlyTotalText}>
         Total Gasto Este Mês: R$ {new Intl.NumberFormat('pt-BR').format(totalValue)}
       </Text>
 
-      {/* ProgressChart */}
+      {/* Gráfico de progresso */}
       <ProgressChart
         data={chartData}
-        width={screenWidth}
+        width={screenWidth *0.9}
         height={220}
         strokeWidth={16}
         radius={32}
         chartConfig={chartConfig}
         hideLegend={false}
       />
+      <View style={styles.spaceAfterChart} />
       <StatusBar style="auto" />
     </ScrollView>
   );
-}
+
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 20,
-    backgroundColor: '#f9f9f9', // Cor de fundo suave para todo o layout
+    backgroundColor: '#141414',
+  },
+  scrollContent: {
+    flexGrow: 1,
+    minHeight: Dimensions.get('window').height,
+    justifyContent: 'space-between',
   },
   title: {
     fontSize: 28,
@@ -904,22 +1034,60 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   cardContainer: {
-    gap: 10,
-    margin: 10,
-    borderRadius: 12,
+    backgroundColor: '#ffff',
+    flexDirection: 'row',
+    marginBottom: 10,
     padding: 15,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 4,
+    marginHorizontal: 10,
+  },
+  iconContainer: {
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 7, // Para Android
-    shadowColor: '#000', // Cor da sombra
-    shadowOffset: { width: 2, height: 4 }, // Posição da sombra
-    shadowOpacity: 0.3, // Opacidade da sombra
-    shadowRadius: 3.5, // Tamanho da sombra
+    marginRight: 15,
+  },
+  iconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconText: {
+    fontSize: 20,
+    color: '#fff',  // Cor do ícone (branco)
+  },
+  cardContent: {
+    flex: 1,
+    justifyContent: 'space-between',
   },
   cardText: {
+    fontSize: 14,
+    color: '#333',
+    lineHeight: 20,
+  },
+  valueContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  valueText: {
     fontSize: 16,
-    color: '#FFFFFF',
-    textAlign: 'center',
+    fontWeight: 'bold',
+    color: '#333',
+    opacity: 0.6,  // Valor sutil
+  },
+  percentageText: {
+    fontSize: 12,
+    color: '#73AE38FF',  // Cor mais suave para a porcentagem
+  },
+  flatListContainer: {
+    maxHeight: 300,  // Define o limite máximo de altura
   },
   analysisContainer: {
     marginVertical: 20,
@@ -934,47 +1102,124 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     color: '#6200ea',
   },
-  analysisText: {
-    fontSize: 16,
+  monthlyTotalText: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#00FFFF',
+    marginBottom: 12,
+  },
+  comparisonContainer: {
+    marginBottom: 12,
+    padding: 10,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  comparisonText: {
+    fontSize: 14,
+    color: '#444',
+  },
+  previousDayText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+    marginVertical: 4,
+  },
+  currentDayText: {
+    fontSize: 14,
+    fontWeight: '600',
     color: '#333',
-    marginVertical: 5,
+    marginVertical: 4,
   },
   boxContainer: {
-    marginVertical: 20,
-    padding: 20,
-    borderRadius: 10,
-    width: '100%',
-
+    marginTop: '5%',
+    marginBottom: 20,
+    padding: 10,
+    backgroundColor: '#262626',
+    borderRadius: 20,
+    marginEnd: '5%',
   },
   boxTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    marginBottom: 10,
     color: '#6200ea',
+    marginBottom: 15,
   },
   boxCardContainer: {
-    flexDirection: 'row',
-    padding: 15,
-    backgroundColor: '#FF9800',
-    borderRadius: 12,
     marginBottom: 10,
-    elevation: 4,
-    shadowOpacity: 0.3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-
-    shadowRadius: 3.5,
+    borderRadius: 10,
+    padding: 15,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.22,
+    shadowRadius: 2.22,
+    elevation: 3,
+  },
+  boxHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  boxCardTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#CC4709FF',
+  },
+  boxIcon: {
+    backgroundColor: '#fff',
+    padding: 5,
+    borderRadius: 20,
+  },
+  boxValueContainer: {
+    marginTop: 10,
   },
   boxCardText: {
     fontSize: 16,
-    color: '#fff',
+    color: '#333',
+    marginBottom: 5,
+  },
+  valueLabel: {
+    fontWeight: 'bold',
+  },
+  boxFooter: {
+    marginTop: 10,
+    alignItems: 'flex-end',
+  },
+  totalText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#388E3C',
+  },
+
+  dayContainer: {
+    marginBottom: 20,
+    padding: 10,
+    backgroundColor: '#262626',
+    borderRadius: 20,
+    marginEnd: '5%',
+  },
+  dateHeader: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 5,
+    color: '#ffff',
     textAlign: 'center',
   },
-  monthlyTotalText: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#333',
-    marginVertical: 15,
+  dateText: {
+    color: '#000',
     textAlign: 'center',
+    marginBottom: '4%',
+  },
+  dateText1: {
+    color: '#ffff',
+    textAlign: 'center',
+    marginBottom: '4%',
+  },
+  spaceAfterChart: {
+    height: 50, 
   },
 });
