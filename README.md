@@ -28,10 +28,12 @@ O **Crontole de Despeesas Pessoais** é uma  um Aplicativo móvel, desenvolvido 
 Siga os passos abaixo para rodar o projeto localmente:
 
 ### 1. Clone o repositório:  
-``git clone https://github.com/WesleyS08/DespesasApp
+``
+git clone https://github.com/WesleyS08/DespesasApp
 ``
 ### 2. Instale as dependências:
-``npm install
+``
+npm install
 ``
 ### 3. Configure o arquivo ``.env``
 
@@ -67,3 +69,6 @@ A aplicação gera análises detalhadas dos seus gastos mensais, comparando o ga
 
 Gerencie caixinhas de dinheiro, como poupança ou metas financeiras. O app calcula automaticamente o saldo e a diferença de cada caixinha.
 
+
+### Demonstração do App 
+https://github.com/user-attachments/assets/fbbe6b7e-2591-453a-a960-e85ebd300f45
