@@ -90,33 +90,40 @@ export default function App() {
     return null;
   };
 
-  // Alteração ao chamar `setMessages` para garantir que o valor seja um array
+  const formatDateToDay = (timestamp) => {
+    const date = new Date(timestamp * 1000); // Converter para milissegundos
+    return date.toISOString().split('T')[0]; // Retorna apenas a parte da data 'YYYY-MM-DD'
+  };
+  
+
+
   const fetchMessages = async () => {
     try {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0); // Começo do dia (meia-noite)
       const endOfDay = new Date();
       endOfDay.setHours(23, 59, 59, 999); // Fim do dia (23:59:59.999)
-
+  
       const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates`;
+      console.log(url);
       const response = await axios.get(url);
       const updates = response.data.result;
-
+  
       const allMessages = updates
         .map((update) => {
           const message = update.message || update.edited_message;
-          const messageDate = new Date(message?.date * 1000); // A data vem em timestamp, convertendo para Date
-
+          const messageDate = new Date(message?.date * 1000); // Garantir que é um objeto Date
+  
           if (message?.chat?.id === parseInt(CHAT_ID)) {
             const messageDetails = parseMessageDetails(message.text || '');
-
+  
             if (!messageDetails) {
               markMessageAsDeleted(message.message_id);
               return null;
             }
-
+  
             const expenseColor = generateColorForExpense(messageDetails.expense);
-
+  
             return {
               id: message.message_id,
               text: message.text || 'Mensagem sem texto',
@@ -133,30 +140,33 @@ export default function App() {
           return null;
         })
         .filter(Boolean); // Remove itens nulos ou inválidos
-
+  
+      // Ordenar as mensagens das mais novas para as mais antigas
+      const sortedMessages = allMessages.sort((a, b) => b.created_at - a.created_at); // As mais novas primeiro
+  
       // Agrupar mensagens por dia
-      const groupedMessages = groupMessagesByDay(allMessages);
-
+      const groupedMessages = groupMessagesByDay(sortedMessages);
+  
       // Calcular os totais diários
       const dailyTotals = calculateDailyTotals(groupedMessages);
-
+  
       // Calcular as diferenças entre os dias
       const comparisonResults = calculateDifferences(dailyTotals);
-
+  
       console.log('Comparação entre os dias:', comparisonResults);
-
+  
       // Exibir os resultados
       setMessages(Object.values(groupedMessages)); // Atualiza a lista de mensagens agrupadas por dia
       setComparisonResults(comparisonResults); // Atualiza os resultados da comparação
-
+  
       // Seguir com o processo de salvar caixinhas ou despesas...
       const caixinhas = allMessages.filter((msg) => msg.box);
       const despesas = allMessages.filter((msg) => !msg.box);
-
+  
       if (caixinhas.length > 0) {
         await saveCaixinhasToSupabase(caixinhas);
       }
-
+  
       if (despesas.length > 0) {
         await saveExpensesToSupabase(despesas);
       }
@@ -164,33 +174,152 @@ export default function App() {
       console.error('Erro ao buscar mensagens:', error);
     }
   };
+  
 
+  
 
-
-
-  const groupMessagesByDay = (messages: any[]) => {
-    const groupedMessages: { [date: string]: any[] } = {};
-
-    messages.forEach((message) => {
-      const messageDate = new Date(message.created_at);
-
-      // Verifica se a data é válida
-      if (isNaN(messageDate.getTime())) {
-        console.warn(`Data inválida para a mensagem ${message.id}`);
-        return; // Ignora mensagens com data inválida
+  const saveCaixinhasToSupabase = async (messages: Message[]) => {
+    try {
+      for (const message of messages) {
+        // Verifica se a mensagem já existe no banco
+        const { data, error } = await supabase
+          .from('caixinhas')
+          .select('message_id, created_at')
+          .eq('message_id', message.id)
+          .single(); // Espera no máximo um registro
+  
+        if (error && error.code !== 'PGRST116') { // Código de erro que indica que o item não foi encontrado
+          console.error('Erro ao buscar a mensagem no banco de dados:', error);
+          return;
+        }
+  
+        if (data) {
+          // Se a mensagem já existir, vamos atualizá-la sem alterar o `created_at`
+          await supabase
+            .from('caixinhas')
+            .update({
+              expense: message.expense,
+              value: message.value,
+              operation: message.operation,
+              category: message.category,
+              box: true,
+              is_deleted: false,
+            })
+            .eq('message_id', message.id); // Atualiza somente os campos necessários
+        } else {
+          // Se a mensagem não existir, vamos inseri-la com `created_at` do momento da inserção
+          await supabase
+            .from('caixinhas')
+            .insert([{
+              message_id: message.id,
+              expense: message.expense,
+              value: message.value,
+              operation: message.operation,
+              category: message.category,
+              box: true,
+              is_deleted: false,
+              created_at: message.created_at, // A data original será salva aqui
+            }]);
+        }
       }
-
-      const dateKey = messageDate.toISOString().split('T')[0];  // Ex: '2024-12-06'
-
-      if (!groupedMessages[dateKey]) {
-        groupedMessages[dateKey] = [];
-      }
-
-      groupedMessages[dateKey].push(message);
-    });
-
-    return groupedMessages;
+  
+      console.log('Mensagens de caixinhas processadas corretamente');
+    } catch (error) {
+      console.error('Erro ao salvar ou atualizar caixinhas no Supabase:', error);
+    }
   };
+  
+
+
+
+
+  const saveExpensesToSupabase = async (messages: Message[]) => {
+    try {
+      for (const message of messages.filter((msg) => !msg.box)) {
+        // Verifica se a mensagem já existe no banco
+        const { data, error } = await supabase
+          .from('expenses')
+          .select('message_id, created_at')
+          .eq('message_id', message.id)
+          .single(); // Espera no máximo um registro
+  
+        if (error && error.code !== 'PGRST116') { // Código de erro que indica que o item não foi encontrado
+          console.error('Erro ao buscar a mensagem no banco de dados:', error);
+          return;
+        }
+  
+        if (data) {
+          // Se a mensagem já existir, vamos atualizá-la sem alterar o `created_at`
+          await supabase
+            .from('expenses')
+            .update({
+              expense: message.expense,
+              value: message.value,
+              status: message.status || 'Não Aplicável',
+              category: message.category || 'Desconhecido',
+              box: message.box !== undefined ? message.box : false,
+              is_deleted: false,
+            })
+            .eq('message_id', message.id); // Atualiza somente os campos necessários
+        } else {
+          // Se a mensagem não existir, vamos inseri-la com `created_at` do momento da inserção
+          await supabase
+            .from('expenses')
+            .insert([{
+              message_id: message.id,
+              expense: message.expense,
+              value: message.value,
+              status: message.status || 'Não Aplicável',
+              category: message.category || 'Desconhecido',
+              box: message.box !== undefined ? message.box : false,
+              is_deleted: false,
+              created_at: message.created_at, // A data original será salva aqui
+            }]);
+        }
+      }
+  
+      console.log('Mensagens processadas corretamente');
+    } catch (error) {
+      console.error('Erro ao salvar ou atualizar despesas no Supabase:', error);
+    }
+  };
+
+
+
+
+const groupMessagesByDay = (messages: any[]) => {
+  const groupedMessages: { [date: string]: any[] } = {};
+
+  // Agrupar as mensagens por dia
+  messages.forEach((message) => {
+    const messageDate = new Date(message.created_at);
+
+    // Verifica se a data é válida
+    if (isNaN(messageDate.getTime())) {
+      console.warn(`Data inválida para a mensagem ${message.id}`);
+      return; // Ignora mensagens com data inválida
+    }
+
+    const dateKey = messageDate.toISOString().split('T')[0];  // Ex: '2024-12-06'
+
+    if (!groupedMessages[dateKey]) {
+      groupedMessages[dateKey] = [];
+    }
+
+    groupedMessages[dateKey].push(message);
+  });
+
+  // Ordenar as mensagens de cada dia da mais nova para a mais antiga
+  for (const dateKey in groupedMessages) {
+    groupedMessages[dateKey].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  }
+
+  // Exibe o agrupamento para inspeção
+  console.log("Mensagens agrupadas por dia:", JSON.stringify(groupedMessages, null, 2));
+
+  return groupedMessages;
+};
+
 
   const calculateDifferences = (dailyTotals) => {
     const comparisonResults = [];
@@ -234,68 +363,6 @@ export default function App() {
 
 
 
-
-
-  const saveCaixinhasToSupabase = async (messages: Message[]) => {
-    try {
-      const { data, error } = await supabase
-        .from('caixinhas')
-        .upsert(
-          messages
-            .filter(message => message.box)  // Filtra as mensagens que são caixinhas
-            .map((message) => ({
-              message_id: message.id,
-              expense: message.expense,
-              value: message.value,
-              operation: message.operation,  // Operação (mais/menos)
-              category: message.category,
-              box: true,
-              is_deleted: false,
-            })),
-          { onConflict: ['message_id'] }
-        );
-
-      if (error) {
-        console.error('Erro ao salvar mensagens na tabela "caixinhas":', error);
-      } else {
-        console.log('Mensagens salvas ou atualizadas na tabela "caixinhas":', data);
-      }
-    } catch (error) {
-      console.error('Erro ao salvar caixinhas no Supabase:', error);
-    }
-  };
-
-
-
-
-  const saveExpensesToSupabase = async (messages: Message[]) => {
-    try {
-      const { data, error } = await supabase
-        .from('expenses')
-        .upsert(
-          messages
-            .filter(message => !message.box)
-            .map((message) => ({
-              message_id: message.id,
-              expense: message.expense,
-              value: message.value,
-              status: message.status || 'Não Aplicável',
-              category: message.category || 'Desconhecido',
-              is_deleted: false,
-              box: message.box !== undefined ? message.box : false,
-            })),
-          { onConflict: ['message_id'] }
-        );
-
-      if (error) {
-        console.error('Erro ao salvar mensagens na tabela "expenses":', error);
-      } else {
-        console.log('Mensagens salvas ou atualizadas na tabela "expenses":', data);
-      }
-    } catch (error) {
-      console.error('Erro ao salvar despesas no Supabase:', error);
-    }
-  };
 
   const generateColorForExpense = (expense: string) => {
     const expenseColors: { [key: string]: string } = {
@@ -409,6 +476,7 @@ export default function App() {
   const onRefresh = async () => {
     setRefreshing(true);
     await fetchMessages();
+    await generateChartData();
     setRefreshing(false);
   };
 
@@ -540,34 +608,103 @@ export default function App() {
     return dailyExpenses;
   };
 
-  // Função para buscar as mensagens
-  const fetchMessagesForMonth = async (startDate: Date, endDate: Date) => {
-    try {
-      const { data, error } = await supabase
-        .from('expenses')
-        .select('*')
-        .gte('created_at', startDate.toISOString())
-        .lte('created_at', endDate.toISOString())
-        .eq('is_deleted', false);
+// Função para buscar as mensagens e calcular comparações diárias
+const fetchMessagesForMonth = async (startDate: Date, endDate: Date) => {
+  try {
+    const { data, error } = await supabase
+      .from('expenses')
+      .select('*')
+      .gte('created_at', startDate.toISOString())
+      .lte('created_at', endDate.toISOString())
+      .eq('is_deleted', false); // Certifique-se de que não são mensagens deletadas
 
-      if (error) {
-        console.error('Erro ao buscar mensagens:', error);
-        return [];
-      }
-
-      return data;
-    } catch (error) {
+    if (error) {
       console.error('Erro ao buscar mensagens:', error);
       return [];
     }
-  };
 
+    console.log("Dados obtidos do Supabase:", data); // Verifique os dados recebidos
 
-  console.log('Dados do gráfico:', chartDataMensal);
+    // Se os dados estiverem vazios, não há necessidade de continuar o processo
+    if (!data || data.length === 0) {
+      console.log("Nenhum dado encontrado.");
+      return [];
+    }
 
+    // Agrupar as despesas por dia
+    const groupedByDay = data.reduce((acc, item) => {
+      const day = new Date(item.created_at).toISOString().split('T')[0]; // Agrupar por data (ano-mês-dia)
 
+      if (!acc[day]) {
+        acc[day] = { total: 0, expenses: [] };
+      }
 
+      acc[day].expenses.push(item);
+      acc[day].total += item.value;
 
+      return acc;
+    }, {});
+
+    console.log("Dados agrupados por dia:", groupedByDay); // Verifique os dados agrupados
+
+    // Organize os dados agrupados em um array
+    const groupedData = Object.keys(groupedByDay).map((date) => ({
+      date,
+      total: groupedByDay[date].total,
+      expenses: groupedByDay[date].expenses,
+    }));
+
+    console.log("Dados organizados:", groupedData); // Verifique os dados organizados
+
+    // Calcular as comparações entre os dias
+    const comparisonResults = [];
+    for (let i = 1; i < groupedData.length; i++) {
+      const previousDay = groupedData[i - 1];
+      const currentDay = groupedData[i];
+
+      const difference = currentDay.total - previousDay.total;
+      const percentageChange = previousDay.total
+        ? ((difference / previousDay.total) * 100)
+        : 0;
+
+      comparisonResults.push({
+        previousDate: previousDay.date,
+        currentDate: currentDay.date,
+        previousTotal: previousDay.total,
+        currentTotal: currentDay.total,
+        difference,
+        percentageChange,
+      });
+    }
+
+    console.log("Comparações diárias:", comparisonResults); // Verifique as comparações geradas
+
+    return comparisonResults;
+  } catch (error) {
+    console.error('Erro ao buscar mensagens:', error);
+    return [];
+  }
+};
+
+// Função que carrega as comparações diárias com base no mês atual
+const loadComparisonData = async () => {
+  // Obter o mês atual
+  const currentDate = new Date();
+  
+  // Calcular o primeiro e último dia do mês atual
+  const startDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1); // Primeiro dia do mês
+  const endDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0); // Último dia do mês
+
+  console.log("Início do mês:", startDate);
+  console.log("Fim do mês:", endDate);
+
+  const results = await fetchMessagesForMonth(startDate, endDate);
+  setComparisonResults(results); // Armazenar os resultados
+};
+
+useEffect(() => {
+  loadComparisonData();
+}, []);
   // Função para calcular a porcentagem de cada despesa
   const calculatePercentage = (expenseValue: number) => {
     return totalValue > 0 ? (expenseValue / totalValue) * 100 : 0;
@@ -697,7 +834,7 @@ export default function App() {
     backgroundGradientFrom: "#262626",
     backgroundGradientTo: "#262626",
     decimalPlaces: 2,
-    color: (opacity = 1) => `rgba(0, 255, 255, ${opacity})`, 
+    color: (opacity = 1) => `rgba(0, 255, 255, ${opacity})`,
     labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
     style: {
       borderRadius: 16, // Bordas arredondadas
@@ -757,6 +894,7 @@ export default function App() {
 
     fetchCaixinhas();
   }, [boxData]);
+
   const addDailyRendimentoToBox = async (boxName: string, rendimento: number) => {
     if (rendimento > 0) {
       try {
@@ -801,6 +939,9 @@ export default function App() {
     return dateObj.toLocaleDateString('pt-BR');
   };
 
+
+
+  
   return (
     <ScrollView
       style={styles.container}
@@ -879,6 +1020,7 @@ export default function App() {
                   style={styles.flatListContainer}
                 />
               )}
+                <View style={styles.spaceAfterChart} />
             </View>
           );
         }}
@@ -931,44 +1073,35 @@ export default function App() {
 
 
       <View style={styles.analysisContainer}>
-        {/* Título da Seção */}
-        <Text style={styles.analysisTitle}>Comparação Diária</Text>
+      <Text style={styles.analysisTitle}>Comparação Diária</Text>
 
-      
+      {comparisonResults && comparisonResults.length > 0 ? (
+        comparisonResults.map((result, index) => {
+          const differenceColor = result.difference >= 0 ? 'green' : 'red';
 
-        {/* Comparações Diárias */}
-        {comparisonResults &&
-          comparisonResults.map((result, index) => {
-            // Definir a cor com base na diferença
-            const differenceColor = result.difference >= 0 ? 'green' : 'red';
-
-            return (
-              <View key={index} style={styles.comparisonContainer}>
-                {/* Datas da Comparação */}
-                <Text style={styles.comparisonText}>
-                  <Text style={styles.dateText}>
-                    {result.previousDate} → {result.currentDate}:
-                  </Text>
+          return (
+            <View key={index} style={styles.comparisonContainer}>
+              <Text style={styles.comparisonText}>
+                <Text style={styles.dateText}>
+                  {result.previousDate} → {result.currentDate}:
                 </Text>
-
-                {/* Valor Gasto no Dia Anterior */}
-                <Text style={styles.previousDayText}>
-                  Gasto no Dia Anterior: R$ {new Intl.NumberFormat('pt-BR').format(result.previousTotal.toFixed(2))}
-                </Text>
-
-                {/* Valor Gasto no Dia Atual */}
-                <Text style={styles.currentDayText}>
-                  Gasto no Dia Atual: R$ {new Intl.NumberFormat('pt-BR').format(result.currentTotal.toFixed(2))}
-                </Text>
-
-                {/* Diferença em Cor */}
-                <Text style={{ color: differenceColor }}>
-                  Diferença: R$ {new Intl.NumberFormat('pt-BR').format(result.difference.toFixed(2))}, {result.percentageChange.toFixed(2)}%
-                </Text>
-              </View>
-            );
-          })}
-      </View>
+              </Text>
+              <Text style={styles.previousDayText}>
+                Gasto no Dia Anterior: R$ {new Intl.NumberFormat('pt-BR').format(result.previousTotal.toFixed(2))}
+              </Text>
+              <Text style={styles.currentDayText}>
+                Gasto no Dia Atual: R$ {new Intl.NumberFormat('pt-BR').format(result.currentTotal.toFixed(2))}
+              </Text>
+              <Text style={{ color: differenceColor }}>
+                Diferença: R$ {new Intl.NumberFormat('pt-BR').format(result.difference.toFixed(2))}, {result.percentageChange.toFixed(2)}%
+              </Text>
+            </View>
+          );
+        })
+      ) : (
+        <Text style={styles.noComparisonText}>Não há comparações para exibir.</Text>
+      )}
+    </View>
 
 
 
@@ -980,7 +1113,7 @@ export default function App() {
       {/* Gráfico de progresso */}
       <ProgressChart
         data={chartData}
-        width={screenWidth *0.9}
+        width={screenWidth * 0.9}
         height={220}
         strokeWidth={16}
         radius={32}
@@ -1220,6 +1353,6 @@ const styles = StyleSheet.create({
     marginBottom: '4%',
   },
   spaceAfterChart: {
-    height: 50, 
+    height: 50,
   },
 });
